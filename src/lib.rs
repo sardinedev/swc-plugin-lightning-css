@@ -1,48 +1,82 @@
-use swc_core::ecma::{
-    ast::Program,
-    transforms::testing::test,
-    visit::{as_folder, FoldWith, VisitMut},
-};
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+use swc_core::common::DUMMY_SP;
+use swc_core::ecma::ast::{EmptyStmt, ModuleDecl, ModuleItem, Stmt};
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
+use swc_core::{
+    common::util::take::Take,
+    ecma::{
+        ast::{ImportDecl, Program},
+        transforms::testing::test,
+        visit::{as_folder, FoldWith, VisitMut, VisitMutWith},
+    },
+};
 
 pub struct TransformVisitor;
 
+/*
+Walk the AST and find all CSS Modules import declarations.
+We mark and remove the module declaration from the AST.
+*/
+
 impl VisitMut for TransformVisitor {
-    // Implement necessary visit_mut_* methods for actual custom transform.
-    // A comprehensive list of possible visitor methods can be found here:
-    // https://rustdoc.swc.rs/swc_ecma_visit/trait.VisitMut.html
+    fn visit_mut_import_decl(&mut self, node: &mut ImportDecl) {
+        node.visit_mut_children_with(self);
+
+        if node.specifiers.is_empty() {
+            return;
+        }
+
+        if node.src.value.ends_with(".module.css") {
+            node.specifiers.take();
+        }
+    }
+
+    // Walk the ASt and finds import declarations that have been marked for removal.
+    // We remove top level import declaration from the AST.
+    fn visit_mut_module_item(&mut self, node: &mut ModuleItem) {
+        node.visit_mut_children_with(self);
+
+        if let ModuleItem::ModuleDecl(decl) = node {
+            if let ModuleDecl::Import(import) = decl {
+                if import.specifiers.is_empty() {
+                    *node = ModuleItem::Stmt(Stmt::Empty(EmptyStmt { span: DUMMY_SP }));
+                }
+            }
+        }
+    }
+
+    fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
+        stmts.visit_mut_children_with(self);
+
+        // We remove `Stmt::Empty` from the statement list.
+        // This is optional, but it's required if you don't want extra `;` in output.
+        stmts.retain(|s| {
+            // We use `matches` macro as this match is trivial.
+            !matches!(s, Stmt::Empty(..))
+        });
+    }
+
+    fn visit_mut_module_items(&mut self, stmts: &mut Vec<ModuleItem>) {
+        stmts.visit_mut_children_with(self);
+
+        // This is also required, because top-level statements are stored in `Vec<ModuleItem>`.
+        stmts.retain(|s| {
+            // We use `matches` macro as this match is trivial.
+            !matches!(s, ModuleItem::Stmt(Stmt::Empty(..)))
+        });
+    }
 }
 
-/// An example plugin function with macro support.
-/// `plugin_transform` macro interop pointers into deserialized structs, as well
-/// as returning ptr back to host.
-///
-/// It is possible to opt out from macro by writing transform fn manually
-/// if plugin need to handle low-level ptr directly via
-/// `__transform_plugin_process_impl(
-///     ast_ptr: *const u8, ast_ptr_len: i32,
-///     unresolved_mark: u32, should_enable_comments_proxy: i32) ->
-///     i32 /*  0 for success, fail otherwise.
-///             Note this is only for internal pointer interop result,
-///             not actual transform result */`
-///
-/// This requires manual handling of serialization / deserialization from ptrs.
-/// Refer swc_plugin_macro to see how does it work internally.
 #[plugin_transform]
 pub fn process_transform(program: Program, _metadata: TransformPluginProgramMetadata) -> Program {
     program.fold_with(&mut as_folder(TransformVisitor))
 }
 
-// An example to test plugin transform.
-// Recommended strategy to test plugin's transform is verify
-// the Visitor's behavior, instead of trying to run `process_transform` with mocks
-// unless explicitly required to do so.
 test!(
     Default::default(),
     |_| as_folder(TransformVisitor),
-    boo,
-    // Input codes
-    r#"console.log("transform");"#,
-    // Output codes after transformed with plugin
-    r#"console.log("transform");"#
+    remove_import,
+    r#"import styles from "./button.module.css";"#,
+    r#""#
 );
