@@ -1,13 +1,20 @@
 {
-    "name": "swc-plugin-lightning-css",
-    "version": "0.1.0",
+    "name": "@sardine/swc-plugin-lightning-css",
+    "version": "0.2.5",
     "description": "",
-    "author": "",
+    "author": "Hugo Nogueira <hello@sardine.dev>",
     "license": "ISC",
-    "keywords": ["swc-plugin"],
-    "main": "target/wasm32-wasi/release/swc-plugin-lightning-css.wasm",
+    "keywords": [
+        "swc-plugin",
+        "lightning-css",
+        "css modules"
+    ],
+    "main": "target/wasm32-wasi/release/swc_plugin_lightning_css.wasm",
     "scripts": {
-        "prepublishOnly": "cargo build-wasi --release"
+        "prepack": "cp target/wasm32-wasi/release/swc_plugin_lightning_css.wasm ."
     },
-    "files": []
+    "files": [],
+    "publishConfig": {
+        "access": "public"
+    }
 }

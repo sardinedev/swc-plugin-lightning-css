@@ -4,7 +4,7 @@ use swc_core::{
     common::chain,
     ecma::parser::{EsConfig, Syntax, TsConfig},
     ecma::transforms::testing::test_fixture,
-    ecma::transforms::{base::resolver, testing::FixtureTestConfig},
+    ecma::transforms::{base, testing::FixtureTestConfig},
 };
 
 fn es_syntax() -> Syntax {
@@ -23,11 +23,10 @@ fn ts_syntax() -> Syntax {
 
 #[testing::fixture("tests/fixture/**/input.tsx")]
 fn fixture(input: PathBuf) {
-    let output = input.with_file_name("output.js");
-    test_fixture(
-        ts_syntax(),
-        &|t| chain!(tr(), properties(t, true)),
-        &input,
-        &output,
-    );
+    let config = FixtureTestConfig {
+        syntax: ts_syntax(),
+        ..Default::default()
+    };
+
+    test_fixture(input, |_, _| chain!(resolver(),), config)
 }

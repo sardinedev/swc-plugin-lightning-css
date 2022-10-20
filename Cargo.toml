@@ -1,7 +1,7 @@
 [package]
 authors = ["Hugo Nogueira <hello@sardine.dev>"]
 name = "swc-plugin-lightning-css"
-version = "0.1.0"
+version = "0.2.2"
 edition = "2021"
 repository = "https://github.com/sardinedev/swc-plugin-lightning-css"
 
@@ -9,11 +9,21 @@ repository = "https://github.com/sardinedev/swc-plugin-lightning-css"
 crate-type = ["cdylib"]
 
 [profile.release]
+# This removes more dead code
+codegen-units = 1
 lto = true
+# Optimize for size
+opt-level = "s"
+# Optimize for performance, this is default so you don't need to specify it
+# opt-level = "z"
+
+# Strip debug symbols
+strip = "symbols"
 
 [dependencies]
 serde = "1"
-swc_core = { version = "0.38.13", features = [
+serde_json = "1"
+swc_core = { version = "0.39.0", features = [
     "plugin_transform",
     "common",
     "ecma_ast",
@@ -21,10 +31,11 @@ swc_core = { version = "0.38.13", features = [
     "ecma_utils",
     "ecma_visit",
 ] }
+walkdir = "2"
 
 [dev-dependencies]
 testing = "0.31.8"
-swc_core = { features = ["testing_transform"], version = "0.38.13" }
+swc_core = { features = ["testing_transform"], version = "0.39.0" }
 
 # .cargo/config defines few alias to build plugin.
 # cargo build-wasi generates wasm-wasi32 binary
