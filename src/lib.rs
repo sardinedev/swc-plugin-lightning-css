@@ -5,7 +5,10 @@ use std::fmt::Debug;
 use std::fs;
 
 use swc_core::common::DUMMY_SP;
-use swc_core::ecma::ast::{EmptyStmt, JSXAttr, JSXAttrName, ModuleDecl, ModuleItem, Stmt};
+use swc_core::ecma::ast::{
+    EmptyStmt, Expr, JSXAttr, JSXAttrName, JSXAttrValue, JSXExpr, MemberExpr, ModuleDecl,
+    ModuleItem, Stmt,
+};
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
 use swc_core::{
     common::util::take::Take,
@@ -16,9 +19,8 @@ use swc_core::{
     },
 };
 
-pub struct TransformVisitor {
-    css_module_map: serde_json::Value,
-}
+#[derive(Default)]
+struct TransformVisitor;
 
 impl VisitMut for TransformVisitor {
     /*
@@ -33,7 +35,7 @@ impl VisitMut for TransformVisitor {
         }
 
         if node.src.value.ends_with(".module.css") {
-            self.css_module_map = get_css_module_mapping(&node.src.value.to_string());
+            // let mut css_module_map = get_css_module_mapping(&node.src.value.to_string());
             node.specifiers.take();
         }
     }
@@ -44,11 +46,31 @@ impl VisitMut for TransformVisitor {
         // check if the attribute name is "className"
         if let JSXAttrName::Ident(ident) = &attr.name {
             if ident.sym == *"className" {
-                // check if the attribute value is a string literal
-                if let Some(value) = &attr.value {
-                    if let Some(value) = &value.as_str() {
-                        // replace the attribute value with the CSS Module mapping
-                        attr.value = Some(self.css_module_map[value].clone().into());
+                if let Some(JSXAttrValue::JSXExprContainer(container)) = &attr.value {
+                    if let JSXExpr::Expr(expr) = &container.expr {
+                        // Checks if we're just passing a propriety to the className, ie: className={styles.foo}
+                        if let Expr::Member(member) = &**expr {
+                            if let Expr::Ident(ident) = &*member.obj {
+                                if ident.sym == *"styles" {
+                                    let obj = &member.prop.as_ident().unwrap().sym.to_string();
+                                    // println!("Found styles with pros: {:?}", obj);
+                                }
+                            }
+                        }
+                        // Checks if we're passing a string to the className, ie: className={`foo ${styles.foo}`}
+                        if let Expr::Tpl(template) = &**expr {
+                            for expr in &template.exprs {
+                                if let Expr::Member(member) = &**expr {
+                                    if let Expr::Ident(ident) = &*member.obj {
+                                        if ident.sym == *"styles" {
+                                            let obj =
+                                                &member.prop.as_ident().unwrap().sym.to_string();
+                                            println!("Found styles with pros: {:?}", obj);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

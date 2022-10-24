@@ -11,6 +11,7 @@
     ],
     "main": "target/wasm32-wasi/release/swc_plugin_lightning_css.wasm",
     "scripts": {
+        "build": "cargo build-wasi --release",
         "prepack": "cp target/wasm32-wasi/release/swc_plugin_lightning_css.wasm ."
     },
     "files": [],
