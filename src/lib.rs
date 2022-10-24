@@ -1,13 +1,14 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 mod utils;
 
-use std::fmt::Debug;
+use std::collections::HashMap;
 use std::fs;
+
+use serde::Deserialize;
 
 use swc_core::common::DUMMY_SP;
 use swc_core::ecma::ast::{
-    EmptyStmt, Expr, JSXAttr, JSXAttrName, JSXAttrValue, JSXExpr, MemberExpr, ModuleDecl,
-    ModuleItem, Stmt,
+    EmptyStmt, Expr, JSXAttr, JSXAttrName, JSXAttrValue, JSXExpr, ModuleDecl, ModuleItem, Stmt,
 };
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
 use swc_core::{
@@ -19,8 +20,45 @@ use swc_core::{
     },
 };
 
-#[derive(Default)]
-struct TransformVisitor;
+#[derive(PartialEq, Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum CssModuleReference {
+    /// A local reference.
+    Local {
+        /// The local (compiled) name for the reference.
+        name: String,
+    },
+    /// A global reference.
+    Global {
+        /// The referenced global name.
+        name: String,
+    },
+    /// A reference to an export in a different file.
+    Dependency {
+        /// The name to reference within the dependency.
+        name: String,
+        /// The dependency specifier for the referenced file.
+        specifier: String,
+    },
+}
+
+#[derive(PartialEq, Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CssModuleExport {
+    /// The local (compiled) name for this export.
+    pub name: String,
+    /// Other names that are composed by this export.
+    pub composes: Vec<CssModuleReference>,
+    /// Whether the export is referenced in this file.
+    pub is_referenced: bool,
+}
+
+/// A map of exported names to values.
+pub type CssModuleExports = HashMap<String, CssModuleExport>;
+
+struct TransformVisitor {
+    css_module_map: CssModuleExports,
+}
 
 impl VisitMut for TransformVisitor {
     /*
@@ -35,7 +73,7 @@ impl VisitMut for TransformVisitor {
         }
 
         if node.src.value.ends_with(".module.css") {
-            // let mut css_module_map = get_css_module_mapping(&node.src.value.to_string());
+            self.css_module_map = get_css_module_mapping(&node.src.value);
             node.specifiers.take();
         }
     }
@@ -53,24 +91,29 @@ impl VisitMut for TransformVisitor {
                             if let Expr::Ident(ident) = &*member.obj {
                                 if ident.sym == *"styles" {
                                     let obj = &member.prop.as_ident().unwrap().sym.to_string();
-                                    // println!("Found styles with pros: {:?}", obj);
+                                    println!("CSS Map: {:?}", self.css_module_map[obj].name);
+                                    println!("Classes: {:?}", obj);
+                                    // Replace the className with the compiled name
+                                    attr.value = Some(JSXAttrValue::Lit(
+                                        self.css_module_map[obj].name.clone().into(),
+                                    ));
                                 }
                             }
                         }
                         // Checks if we're passing a string to the className, ie: className={`foo ${styles.foo}`}
-                        if let Expr::Tpl(template) = &**expr {
-                            for expr in &template.exprs {
-                                if let Expr::Member(member) = &**expr {
-                                    if let Expr::Ident(ident) = &*member.obj {
-                                        if ident.sym == *"styles" {
-                                            let obj =
-                                                &member.prop.as_ident().unwrap().sym.to_string();
-                                            println!("Found styles with pros: {:?}", obj);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // if let Expr::Tpl(template) = &**expr {
+                        //     for expr in &template.exprs {
+                        //         if let Expr::Member(member) = &**expr {
+                        //             if let Expr::Ident(ident) = &*member.obj {
+                        //                 if ident.sym == *"styles" {
+                        //                     let obj =
+                        //                         &member.prop.as_ident().unwrap().sym.to_string();
+                        //                     println!("Found styles with pros: {:?}", obj);
+                        //                 }
+                        //             }
+                        //         }
+                        //     }
+                        // }
                     }
                 }
             }
@@ -103,33 +146,35 @@ impl VisitMut for TransformVisitor {
 /*
  * Takes a relative path to a CSS file and returns an object with the mapping with the scoped class names.
  */
-fn get_css_module_mapping(css_file_path: &String) -> serde_json::Value {
+fn get_css_module_mapping(css_file_path: &str) -> CssModuleExports {
     // Replace the .css extension with .json
     let json_file = css_file_path.replace(".css", ".json").replace("./", "");
 
     let json_file_path = utils::find_file(json_file).unwrap();
 
     let data = fs::read_to_string(json_file_path).expect("Unable to read file");
-    let json = serde_json::from_str(&data).expect("JSON does not have correct format.");
-    return json;
+
+    serde_json::from_str::<CssModuleExports>(&data).expect("JSON does not have correct format.")
 }
 
 #[plugin_transform]
 pub fn process_transform(program: Program, _metadata: TransformPluginProgramMetadata) -> Program {
-    program.fold_with(&mut as_folder(TransformVisitor))
+    program.fold_with(&mut as_folder(TransformVisitor {
+        css_module_map: HashMap::new(),
+    }))
 }
 
 test!(
     Default::default(),
-    |_| as_folder(TransformVisitor),
+    |_| as_folder(TransformVisitor {
+        css_module_map: HashMap::new(),
+    }),
     remove_import,
     r#"
     import styles from "./button.module.css";
     export const Button = () => (<button className={styles.button} id="3"/>);
     "#,
-    r#"export const Button = ()=>{
-        return h("button", {
-            className: 'button'
-        });
-    };"#
+    r#"
+    export const Button = () => (<button className={styles.button} id="3"/>);
+    "#
 );
