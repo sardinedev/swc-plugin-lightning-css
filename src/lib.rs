@@ -8,8 +8,11 @@ use serde::Deserialize;
 
 use swc_core::common::DUMMY_SP;
 use swc_core::ecma::ast::{
-    EmptyStmt, Expr, JSXAttr, JSXAttrName, JSXAttrValue, JSXExpr, ModuleDecl, ModuleItem, Stmt,
+    Decl, EmptyStmt, Expr, ImportDefaultSpecifier, ImportSpecifier, JSXAttr, JSXAttrName,
+    JSXAttrValue, JSXExpr, KeyValueProp, ModuleDecl, ModuleItem, ObjectLit, Pat, PatOrExpr, Prop,
+    PropName, PropOrSpread, Stmt, VarDecl, VarDeclKind, VarDeclarator,
 };
+use swc_core::ecma::utils::{quote_ident, StmtLike};
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
 use swc_core::{
     common::util::take::Take,
@@ -58,6 +61,8 @@ pub type CssModuleExports = HashMap<String, CssModuleExport>;
 
 struct TransformVisitor {
     css_module_map: CssModuleExports,
+    style_import_name: String,
+    should_create_mapped_class_obj: bool,
 }
 
 impl VisitMut for TransformVisitor {
@@ -74,6 +79,14 @@ impl VisitMut for TransformVisitor {
 
         if node.src.value.ends_with(".module.css") {
             self.css_module_map = get_css_module_mapping(&node.src.value);
+            for specifier in &node.specifiers {
+                if let ImportSpecifier::Default(ImportDefaultSpecifier { local, span: _ }) =
+                    specifier
+                {
+                    self.style_import_name = local.sym.to_string();
+                }
+            }
+
             node.specifiers.take();
         }
     }
@@ -84,31 +97,36 @@ impl VisitMut for TransformVisitor {
         // check if the attribute name is "className"
         if let JSXAttrName::Ident(ident) = &attr.name {
             if ident.sym == *"className" {
-                if let Some(JSXAttrValue::JSXExprContainer(container)) = &attr.value {
+                if let Some(JSXAttrValue::JSXExprContainer(container)) = attr.value.clone() {
                     if let JSXExpr::Expr(expr) = &container.expr {
                         // Checks if we're just passing a propriety to the className, ie: className={styles.foo}
                         if let Expr::Member(member) = &**expr {
                             if let Expr::Ident(ident) = &*member.obj {
                                 if ident.sym == *"styles" {
-                                    let obj = &member.prop.as_ident().unwrap().sym.to_string();
-                                    println!("CSS Map: {:?}", self.css_module_map[obj].name);
-                                    println!("Classes: {:?}", obj);
+                                    let prop = &member.prop.as_ident().unwrap().sym.to_string();
                                     // Replace the className with the compiled name
                                     attr.value = Some(JSXAttrValue::Lit(
-                                        self.css_module_map[obj].name.clone().into(),
+                                        self.css_module_map[prop].name.clone().into(),
                                     ));
                                 }
                             }
+                        } else {
+                            self.should_create_mapped_class_obj = true;
                         }
                         // Checks if we're passing a string to the className, ie: className={`foo ${styles.foo}`}
                         // if let Expr::Tpl(template) = &**expr {
                         //     for expr in &template.exprs {
                         //         if let Expr::Member(member) = &**expr {
-                        //             if let Expr::Ident(ident) = &*member.obj {
-                        //                 if ident.sym == *"styles" {
-                        //                     let obj =
-                        //                         &member.prop.as_ident().unwrap().sym.to_string();
-                        //                     println!("Found styles with pros: {:?}", obj);
+                        //             if let Expr::Ident(obj) = &*member.obj {
+                        //                 if obj.sym == *"styles" {
+                        //                     if let MemberProp::Ident(ident) = &member.prop {
+                        //                         let prop = &ident.sym.to_string();
+                        //                         println!("prop: {:?}", prop);
+                        //                         println!(
+                        //                             "css_module_map: {:?}",
+                        //                             self.css_module_map[prop].name
+                        //                         );
+                        //                     }
                         //                 }
                         //             }
                         //         }
@@ -119,6 +137,10 @@ impl VisitMut for TransformVisitor {
             }
         }
     }
+
+    // fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
+    //     self.visit_mut_stmt_like(stmts);
+    // }
 
     // Walk the ASt and finds import declarations that have been marked for removal.
     // We remove top level import declaration from the AST.
@@ -133,13 +155,85 @@ impl VisitMut for TransformVisitor {
     }
 
     fn visit_mut_module_items(&mut self, stmts: &mut Vec<ModuleItem>) {
-        stmts.visit_mut_children_with(self);
+        self.visit_mut_stmt_like(stmts);
+        // stmts.visit_mut_children_with(self);
 
         // This is also required, because top-level statements are stored in `Vec<ModuleItem>`.
         stmts.retain(|s| {
             // We use `matches` macro as this match is trivial.
             !matches!(s, ModuleItem::Stmt(Stmt::Empty(..)))
         });
+    }
+}
+
+impl TransformVisitor {
+    fn visit_mut_stmt_like<T>(&mut self, stmts: &mut Vec<T>)
+    where
+        Vec<T>: VisitMutWith<Self>,
+        T: StmtLike + VisitMutWith<TransformVisitor>,
+    {
+        let mut stmts_updated = Vec::with_capacity(stmts.len());
+
+        for mut stmt in stmts.take() {
+            stmt.visit_mut_with(self);
+            stmts_updated.push(stmt);
+        }
+
+        if self.should_create_mapped_class_obj {
+            let object_map_name = quote_ident!(DUMMY_SP, "hugo");
+
+            let obj_props = self
+                .css_module_map
+                .iter()
+                .map(|(key, value)| {
+                    let key = key.clone();
+                    let value = value.name.clone();
+                    PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                        key: PropName::Ident(quote_ident!(DUMMY_SP, key)),
+                        value: Box::new(value.into()),
+                    })))
+                })
+                .collect();
+
+            /*
+             * Create a new object with the compiled class names, ie:
+             * `const styles = { foo: "foo_1", bar: "bar_1" }`
+             */
+            let style_object = Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                span: DUMMY_SP,
+                kind: VarDeclKind::Const,
+                declare: false,
+                decls: vec![VarDeclarator {
+                    span: DUMMY_SP,
+                    name: quote_ident!(DUMMY_SP, "_styles").into(),
+                    init: Some(Box::new(Expr::Object(ObjectLit {
+                        span: DUMMY_SP,
+                        props: obj_props,
+                    }))),
+                    definite: false,
+                }],
+            })));
+            stmts_updated.push(T::from_stmt(style_object));
+        }
+
+        // let init_var = Stmt::Decl(Decl::Var(Box::new(VarDecl {
+        //     span: DUMMY_SP,
+        //     kind: VarDeclKind::Const,
+        //     declare: false,
+        //     decls: vec![VarDeclarator {
+        //         span: DUMMY_SP,
+        //         name: quote_ident!(DUMMY_SP, "styles").into(),
+        //         init: Some(Box::new(Expr::Ident(quote_ident!(
+        //             DUMMY_SP,
+        //             self.style_import_name.clone()
+        //         )))),
+        //         definite: false,
+        //     }],
+        // })));
+
+        // stmts_updated.push(T::from_stmt(init_var));
+
+        *stmts = stmts_updated;
     }
 }
 
@@ -161,6 +255,8 @@ fn get_css_module_mapping(css_file_path: &str) -> CssModuleExports {
 pub fn process_transform(program: Program, _metadata: TransformPluginProgramMetadata) -> Program {
     program.fold_with(&mut as_folder(TransformVisitor {
         css_module_map: HashMap::new(),
+        style_import_name: String::new(),
+        should_create_mapped_class_obj: false,
     }))
 }
 
@@ -168,6 +264,8 @@ test!(
     Default::default(),
     |_| as_folder(TransformVisitor {
         css_module_map: HashMap::new(),
+        style_import_name: String::new(),
+        should_create_mapped_class_obj: false,
     }),
     remove_import,
     r#"
