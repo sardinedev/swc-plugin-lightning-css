@@ -9,8 +9,8 @@ use serde::Deserialize;
 use swc_core::common::DUMMY_SP;
 use swc_core::ecma::ast::{
     Decl, EmptyStmt, Expr, ImportDefaultSpecifier, ImportSpecifier, JSXAttr, JSXAttrName,
-    JSXAttrValue, JSXExpr, KeyValueProp, ModuleDecl, ModuleItem, ObjectLit, Pat, PatOrExpr, Prop,
-    PropName, PropOrSpread, Stmt, VarDecl, VarDeclKind, VarDeclarator,
+    JSXAttrValue, JSXExpr, KeyValueProp, ModuleDecl, ModuleItem, ObjectLit, Prop, PropName,
+    PropOrSpread, Stmt, VarDecl, VarDeclKind, VarDeclarator,
 };
 use swc_core::ecma::utils::{quote_ident, StmtLike};
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
@@ -113,34 +113,11 @@ impl VisitMut for TransformVisitor {
                         } else {
                             self.should_create_mapped_class_obj = true;
                         }
-                        // Checks if we're passing a string to the className, ie: className={`foo ${styles.foo}`}
-                        // if let Expr::Tpl(template) = &**expr {
-                        //     for expr in &template.exprs {
-                        //         if let Expr::Member(member) = &**expr {
-                        //             if let Expr::Ident(obj) = &*member.obj {
-                        //                 if obj.sym == *"styles" {
-                        //                     if let MemberProp::Ident(ident) = &member.prop {
-                        //                         let prop = &ident.sym.to_string();
-                        //                         println!("prop: {:?}", prop);
-                        //                         println!(
-                        //                             "css_module_map: {:?}",
-                        //                             self.css_module_map[prop].name
-                        //                         );
-                        //                     }
-                        //                 }
-                        //             }
-                        //         }
-                        //     }
-                        // }
                     }
                 }
             }
         }
     }
-
-    // fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
-    //     self.visit_mut_stmt_like(stmts);
-    // }
 
     // Walk the ASt and finds import declarations that have been marked for removal.
     // We remove top level import declaration from the AST.
@@ -154,12 +131,12 @@ impl VisitMut for TransformVisitor {
         }
     }
 
-    fn visit_mut_module_items(&mut self, stmts: &mut Vec<ModuleItem>) {
-        self.visit_mut_stmt_like(stmts);
-        // stmts.visit_mut_children_with(self);
+    fn visit_mut_module_items(&mut self, nodes: &mut Vec<ModuleItem>) {
+        nodes.visit_mut_children_with(self);
+        self.visit_mut_stmt_like(nodes);
 
         // This is also required, because top-level statements are stored in `Vec<ModuleItem>`.
-        stmts.retain(|s| {
+        nodes.retain(|s| {
             // We use `matches` macro as this match is trivial.
             !matches!(s, ModuleItem::Stmt(Stmt::Empty(..)))
         });
@@ -180,13 +157,12 @@ impl TransformVisitor {
         }
 
         if self.should_create_mapped_class_obj {
-            let object_map_name = quote_ident!(DUMMY_SP, "hugo");
-
             let obj_props = self
                 .css_module_map
                 .iter()
                 .map(|(key, value)| {
                     let key = key.clone();
+                    println!("key: {}", key);
                     let value = value.name.clone();
                     PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
                         key: PropName::Ident(quote_ident!(DUMMY_SP, key)),
@@ -205,7 +181,7 @@ impl TransformVisitor {
                 declare: false,
                 decls: vec![VarDeclarator {
                     span: DUMMY_SP,
-                    name: quote_ident!(DUMMY_SP, "_styles").into(),
+                    name: quote_ident!(DUMMY_SP, self.style_import_name.clone()).into(),
                     init: Some(Box::new(Expr::Object(ObjectLit {
                         span: DUMMY_SP,
                         props: obj_props,
@@ -215,23 +191,6 @@ impl TransformVisitor {
             })));
             stmts_updated.push(T::from_stmt(style_object));
         }
-
-        // let init_var = Stmt::Decl(Decl::Var(Box::new(VarDecl {
-        //     span: DUMMY_SP,
-        //     kind: VarDeclKind::Const,
-        //     declare: false,
-        //     decls: vec![VarDeclarator {
-        //         span: DUMMY_SP,
-        //         name: quote_ident!(DUMMY_SP, "styles").into(),
-        //         init: Some(Box::new(Expr::Ident(quote_ident!(
-        //             DUMMY_SP,
-        //             self.style_import_name.clone()
-        //         )))),
-        //         definite: false,
-        //     }],
-        // })));
-
-        // stmts_updated.push(T::from_stmt(init_var));
 
         *stmts = stmts_updated;
     }
